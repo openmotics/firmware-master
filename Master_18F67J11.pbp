@@ -51,8 +51,8 @@ define      NO_CLRWDT 1
 
 '-------CONSTANTS------------
 VERSION             con 3
-FIRMWARE            con 143
-BUILT               con 109
+FIRMWARE            con 143                                    
+BUILT               con 111
 
 HARDWARE            con 4
 BUFFER_RS232        con 132                         ' Number of bytes received from serial buffer
@@ -61,7 +61,7 @@ RS9600              con 84
 RS19200             con 32
 PAUSE_VALUE         con 5                           'pause between putting RS485 in send mode and effectively sending data
 BUFFER_RS485        con 21                          'Number of bytes receices from RS485 bus
-QUEUE_MAX           con 98
+QUEUE_MAX           con 97
 SCHED_QUEUE_MAX     con 60
 TIMER_QUEUE         con 50
 MAX_THERMOSTATS     con 32                          'put at 24 because RAM of DS1307, maximum 32 !!!
@@ -372,6 +372,7 @@ EepPage0            var bit
 OledEeprom          var word
 OledEepromBit       var bit
 Oleddata            var byte
+OleddataAddr        var word
 OledDataOk          var bit
 SyncDebug           var bit
 SyncEnable          var bit
@@ -1738,11 +1739,13 @@ Read_eeprom_data:
     'endif
     eep_addr.byte1 = OledEeprom.byte1 'page
     eep_addr.byte0 = OledEeprom.byte0 'byte
+    OledDataAddr.byte1 = OledEeprom.byte1 'page
+    OledDataAddr.byte0 = OledEeprom.byte0 'byte     
     Gosub read_eeprom
     oleddata=i2cdata
     OledDataOk=1                      'Data is OK
     if mode_com=0 and syncdebug=1 then
-      hserout2 ["Sync P",dec3 OledEeprom.byte1,"/",dec3 OledEeprom.byte0,"=",dec oleddata,13,10]
+      hserout2 ["Sync P",dec3 OledDataAddr.byte1,"/",dec3 OledDataAddr.byte0,"=",dec oleddata,13,10]
     endif
     if OledEeprom.byte0 = 255 then 
       OledEepromBit=1
@@ -1820,9 +1823,9 @@ sent_input:
   A_e[7]=InputFilter
   if OledDataOk=1 then
     A_e[8]="E"
-    A_e[9]=OledEeprom.byte1           'page
-    A_e[10]=OledEeprom.byte0          'byte
-    A_e[11]=oleddata
+    A_e[9]=OledDataAddr.byte1           'page
+    A_e[10]=OledDataAddr.byte0          'byte
+    A_e[11]=OledData
   endif
   if A_ModID0[i-1]="I" then
     A_e[12]="O"
@@ -5776,6 +5779,10 @@ activate_device:
   A_e[6]=0
   A_e[7]=0
   A_e[8]=0
+  CRC2=A_e[0]+A_e[1]+A_e[2]+A_e[3]+A_e[4]+A_e[5]
+  A_e[15]="C"
+  A_e[16]=CRC2.byte1
+  A_e[17]=CRC2.byte0
   gosub send_rs485_long 
 return
 
@@ -8804,6 +8811,7 @@ Bus_init:
   gosub Add_Broad_queue                          'send initialization code (broadcast) on RS485 network
   gosub Add_Broad_queue         
   'InterpreteSer1=0
+  RS485busy=NO
   RCSTA1.4=1                                'enable receiving serial 1 
 return
 
