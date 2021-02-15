@@ -16,7 +16,7 @@
 'You should have received a copy of the GNU General Public License
 'along with OpenMotics.  If not, see <http://www.gnu.org/licenses/>.
 '************************************************************************
-
+                                                                                                                       
 'Firmware to be used with the OpenMotics Gateway Module and programmed on the Microchip PIC18F67J11
 
 'Written in Pic Basic Pro 2.6 however it should be compatible with Pic Basic Pro 3.0 but this is not yet tested
@@ -52,10 +52,10 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 113
+BUILT               con 114
 
 HARDWARE            con 4
-BUFFER_RS232        con 132                         ' Number of bytes received from serial buffer
+BUFFER_RS232        con 122                         ' Number of bytes received from serial buffer
 NR_OF_CMD           con 160                         ' nr of commands (command line instructions)
 RS9600              con 84
 RS19200             con 32
@@ -81,6 +81,7 @@ MAX_E               con 20
 MAX_BROAD_QUEUE     con 20                          'depth of the broadcast queue
 YES                 con 1
 NO                  con 0
+MAX_CAN_CONTROLS    con 4
 
 START               con 0
 STEP1               con 1
@@ -88,6 +89,9 @@ STEP2               con 2
 STEP3               con 3
 STEP4               con 4
 STEP5               con 5
+
+ERASE_SENSORS       con 0
+ERASE_INPUTS        con 1
 
 
 '------MUST AT STARTUP---------
@@ -416,6 +420,8 @@ BA_action           var byte
 BA_type             var byte
 BA_action_queue     var byte
 BA_type_queue       var byte
+can_control_number  var byte
+erase_type          var bit
 
 '------------ARRAYS------------------------
 A_ldr               var byte[MAX_SENSORS]            'light intensity measured on input module
@@ -486,6 +492,9 @@ A_broad1            var byte[MAX_BROAD_QUEUE]
 A_broad2            var byte[MAX_BROAD_QUEUE]
 A_broadId           var byte[MAX_BROAD_QUEUE]
 A_broadData         var byte[MAX_BROAD_QUEUE]
+A_cc_inputs         var byte[MAX_CAN_CONTROLS]
+A_cc_sensors        var byte[MAX_CAN_CONTROLS]
+A_cc_outputs        var byte[MAX_CAN_CONTROLS]
 
 '------------INTERRUPTS--------------------
 
@@ -611,6 +620,7 @@ broad_end_pointer=0
 broad_start_pointer=0
 broad_queue_size=0
 broad_state_machine=START
+can_control_number=0
 CLEARWDT
 pause 80
 mode_com=0                                  'simple communication mode
@@ -823,44 +833,46 @@ goto MainLoop
 ' Interrupt routines
 '----------------------------------------------------------------------------
 
-Receive1:                                   'RS485
-  recser1temp1=recser1temp2                 'Keep previous character also
-  recser1temp2=RCREG1
-  if recser1=1 then                         'Receiving? 
-    if PointerSer1<BUFFER_RS485 then A_RS485string[PointerSer1]=recser1temp2
-    if PointerSer1<(BUFFER_RS485-1) then 
-      pointerser1=pointerser1+1
-    else
-      RecSer1=0                             'stop receiving ser1 and buffering/interpreting
-      InterpreteSer1=1
-      RCSTA1.4=0                            'disable receiving serial 1
-    endif
-    if recser1temp1=13 and recser1temp2=10 then
-      RecSer1=0                             'stop receiving ser1 and buffering/interpreting
-      InterpreteSer1=1 
-      RCSTA1.4=0                            'disable receiving serial 1
-      T0CON.7=0                             'timer 0 disabled
-    endif
-    if Rs485message="O" then
-      if PointerSer1>RecBytesSer1 then      'Output message (Dimmer, output or Store module)
-        RecSer1=0                           'stop receiving ser1 and buffering/interpreting
-        InterpreteSer1=1
-        RCSTA1.4=0                          'disable receiving serial 1
-        T0CON.7=0                           'timer 0 disabled
-      endif  
-    endif       
-  else 
-    if recser1temp1="R" and recser1temp2="C" then
-      Pointerser1=0
-      recser1=1                             'start receiving ser1
-      interpreteser1=0
-    endif
-    if recser1temp1="G" and recser1temp2="M" then
-      Pointerser1=0
-      recser1=1                             'start receiving ser1
-      interpreteser1=0
-    endif
-  endif    
+Receive1:                                       'RS485
+    recser1temp1=recser1temp2                   'Keep previous character also
+    recser1temp2=RCREG1
+    if recser1=1 then                           'Receiving? 
+        'if PointerSer1<BUFFER_RS485 then A_RS485string[PointerSer1]=recser1temp2
+        A_RS485string[PointerSer1]=recser1temp2 
+        pointerser1=pointerser1+1        
+        if PointerSer1>=(BUFFER_RS485-1) then
+            RecSer1=0                           'stop receiving ser1 and buffering/interpreting
+            InterpreteSer1=1
+            RCSTA1.4=0                          'disable receiving serial 1
+        else
+            if recser1temp1=13 and recser1temp2=10 then
+                RecSer1=0                           'stop receiving ser1 and buffering/interpreting
+                InterpreteSer1=1 
+                RCSTA1.4=0                          'disable receiving serial 1
+                T0CON.7=0                           'timer 0 disabled
+            else
+                if Rs485message="O" then
+                    if PointerSer1>RecBytesSer1 then    'Output message (Dimmer, output or Store module)
+                        RecSer1=0                       'stop receiving ser1 and buffering/interpreting
+                        InterpreteSer1=1
+                        RCSTA1.4=0                      'disable receiving serial 1
+                        T0CON.7=0                       'timer 0 disabled
+                    endif
+                endif        
+            endif
+        endif           
+    else 
+        if recser1temp1="R" and recser1temp2="C" then
+            Pointerser1=0
+            recser1=1                           'start receiving ser1
+            interpreteser1=0
+        endif
+        if recser1temp1="G" and recser1temp2="M" then
+            Pointerser1=0
+            recser1=1                           'start receiving ser1
+            interpreteser1=0
+        endif
+    endif    
 @ INT_RETURN
 
 Receive2:                                   'RS232
@@ -1536,102 +1548,106 @@ return
 '------------------------------------------------------------------------------
 
 Rs485_interprete:
-  if interpreteSer1=1 then 
-    RS485busy=YES
-    InterpreteSer1=0
-    gosub check_FV_instruction      'check if "FV" is received
-    'delete
-    'hserout2 ["Instr type:",RS485Message," ",A_RS485string[0],".",dec A_RS485string[1],".",dec A_RS485string[2],".",dec A_RS485string[3]," ",A_RS485string[4],13,10]
-    if RS485Message="I" then                'Response Input (input, temp etc) modules
-      i=pollNr
-      if A_RS485string[0]="I" then            'Input
-        gosub Communicate_input
-      else                                  'Temp & oled
-        if A_RS485string[0]="T" then          'A_Temperature (ADC value)
-          gosub check_response_temp_module  'Input module
-        elseif A_RS485string[0]="C" then      'CAN Control
-          gosub Communicate_CAN
-        'elseif A_RS485string[0]="L" then      'Oled         
-        '  gosub Communicate_oled
-        endif  
-      endif
-      pollTimeInput=WaitTimeInput
-    'endif
-    elseif RS485Message="O" then                'Response Output modules
-      if A_RS485string[0]="D" or A_RS485string[0]="R" or A_RS485string[0]="O" then
-        i=pollNrOut
-        if A_RS485string[4]="K" and A_RS485string[0]=A_ModID0[29+i] and A_RS485string[1]=A_ModID1[29+i] and A_RS485string[2]=A_ModID2[29+i] and A_RS485string[3]=A_ModID3[29+i] then   'Received OK from output Module
-          i2caddr = 8+i
-          if A_RS485string[0]="R" then 
-            if (i-1)<MAX_OUTPUT_MODULES then A_Output[i-1]=A_RS485string[5]         'Retricted output module (curtains) will refuse to switch on output0 and 1 for example so the output module must give back the new state of the outputs
-          endif
-          i2cdata = A_Output[i-1]                'put A_Output(i) in clock ram
-          gosub write_i2c_2
-          pollTimeOutput=WaitTimeOutput
-          ic=pollNrOut
-          gosub sent_output
-          i=pollNrOut
-          gosub timer_value                 'set all timer values correctly  
-        else
-          i=pollNrOut
-          A_ErrorID[0]= A_ModID0[29+i]        'Device is not responding with OK or wrong module is responding
-          A_ErrorID[1]= A_ModID1[29+i]
-          A_ErrorID[2]= A_ModID2[29+i]
-          A_ErrorID[3]= A_ModID3[29+i]
-          ErrorTmp=29+i
-          error_code = 9
-          Gosub Add_ErrorCount
-          gosub send_error   
-        endif        
-      endif           
-    'endif
-    elseif RS485Message="R" then                'Roller/shutter in Large Installation Mode
-      if A_RS485string[0]="R" then
-        i=pollNrOutRS
-        gosub Get_ID  
-        if A_RS485string[4]="K" and A_RS485string[0]=A_Digit[0] and A_RS485string[1]=A_Digit[1] and A_RS485string[2]=A_Digit[2] and A_RS485string[3]=A_Digit[3] then   'Received OK from output Module
-          if (i-1)<MAX_RS_MODULES then A_OutputRS[i-1]=A_RS485string[5]         'Retricted output module (curtains) will refuse to switch on output0 and 1 for example so the output module must give back the new state of the outputs
-          pollTimeOutput=WaitTimeOutput
-          ic=pollNrOutRS
-          if mode_com=1 and AutResponseSO=1 then  'only in API mode and when Auto Response Output List bit is set
-            cid=0
-            gosub SO_linux2                    'Send SO instruction to Master controller
-          endif 
-          if pollNrOutRS<MAX_RS_MODULES+1 then A_WriteYesModRS[pollNrOutRS-1]=0 
-        else
-          i=pollNrOutRS
-          A_ErrorID[0]= A_ModID0[29+i]        'Device is not responding with OK or wrong module is responding
-          A_ErrorID[1]= A_ModID1[29+i]
-          A_ErrorID[2]= A_ModID2[29+i]
-          A_ErrorID[3]= A_ModID3[29+i]
-          error_code = 28
-          gosub send_error   
-        endif        
-      endif              
-    elseif RS485Message="F" then                'Response Firmware instruction
-    'elseif A_RS485string[4]="F" then
-      'if A_RS485string[4]="F" then            'Firmware info came in
-      gosub Send_F_instruction
-      '  hserout2 ["Firmware instruction sent",13,10]   
-      'endif 
-    elseif RS485Message="t" then                'Response 16 ports Temp module (old version) 
-      if A_RS485string[0]="T" and A_RS485string[1]="0" and A_RS485string[2]="0" and A_RS485string[3]="0" then
-        for ic=0 to 15
-          a=ic+14
-          gosub Set_Temperature
-          gosub Temperature_Offset
-        next ic  
-      endif
-    'endif      
-    elseif RS485Message="B" then                'Broadcast message received
-      if mode="I" then
-        gosub rs485_receive_init
-      endif  
-    endif
-    pointerser1=0
-    'hier RS485
-    RS485busy=NO
-  endif  
+    if interpreteSer1=1 then 
+        RS485busy=YES
+        InterpreteSer1=0
+        gosub check_FV_instruction      'check if "FV" is received
+        'delete
+        'hserout2 ["Instr type:",RS485Message," ",A_RS485string[0],".",dec A_RS485string[1],".",dec A_RS485string[2],".",dec A_RS485string[3]," ",A_RS485string[4],13,10]
+        if RS485Message="I" then                'Response Input (input, temp etc) modules
+            i=pollNr
+            if A_RS485string[0]="I" then            'Input
+                gosub Communicate_input
+            else                                  'Temp & oled
+                if A_RS485string[0]="T" then          'A_Temperature (ADC value)
+                    gosub check_response_temp_module  'Input module
+                elseif A_RS485string[0]="C" then      'CAN Control
+                    gosub Communicate_CAN
+                endif  
+            endif
+            pollTimeInput=WaitTimeInput
+        elseif RS485Message="O" then                'Response Output modules
+            if A_RS485string[0]="D" or A_RS485string[0]="R" or A_RS485string[0]="O" then
+                i=pollNrOut
+                if A_RS485string[4]="K" and A_RS485string[0]=A_ModID0[29+i] and A_RS485string[1]=A_ModID1[29+i] and A_RS485string[2]=A_ModID2[29+i] and A_RS485string[3]=A_ModID3[29+i] then   'Received OK from output Module
+                    i2caddr = 8+i
+                    if A_RS485string[0]="R" then 
+                        if (i-1)<MAX_OUTPUT_MODULES then A_Output[i-1]=A_RS485string[5]         'Retricted output module (curtains) will refuse to switch on output0 and 1 for example so the output module must give back the new state of the outputs
+                    endif
+                    i2cdata = A_Output[i-1]                'put A_Output(i) in clock ram
+                    gosub write_i2c_2
+                    pollTimeOutput=WaitTimeOutput
+                    ic=pollNrOut
+                    gosub sent_output
+                    i=pollNrOut
+                    gosub timer_value                 'set all timer values correctly  
+                else
+                    i=pollNrOut
+                    A_ErrorID[0]= A_ModID0[29+i]        'Device is not responding with OK or wrong module is responding
+                    A_ErrorID[1]= A_ModID1[29+i]
+                    A_ErrorID[2]= A_ModID2[29+i]
+                    A_ErrorID[3]= A_ModID3[29+i]
+                    ErrorTmp=29+i
+                    error_code = 9
+                    Gosub Add_ErrorCount
+                    gosub send_error   
+                endif        
+            endif           
+        elseif RS485Message="R" then                'Roller/shutter in Large Installation Mode
+            if A_RS485string[0]="R" then
+                i=pollNrOutRS
+                gosub Get_ID  
+                if A_RS485string[4]="K" and A_RS485string[0]=A_Digit[0] and A_RS485string[1]=A_Digit[1] and A_RS485string[2]=A_Digit[2] and A_RS485string[3]=A_Digit[3] then   'Received OK from output Module
+                    if (i-1)<MAX_RS_MODULES then A_OutputRS[i-1]=A_RS485string[5]         'Retricted output module (curtains) will refuse to switch on output0 and 1 for example so the output module must give back the new state of the outputs
+                    pollTimeOutput=WaitTimeOutput
+                    ic=pollNrOutRS
+                    if mode_com=1 and AutResponseSO=1 then  'only in API mode and when Auto Response Output List bit is set
+                        cid=0
+                        gosub SO_linux2                    'Send SO instruction to Master controller
+                    endif 
+                    if pollNrOutRS<MAX_RS_MODULES+1 then A_WriteYesModRS[pollNrOutRS-1]=0 
+                else
+                    i=pollNrOutRS
+                    A_ErrorID[0]= A_ModID0[29+i]        'Device is not responding with OK or wrong module is responding
+                    A_ErrorID[1]= A_ModID1[29+i]
+                    A_ErrorID[2]= A_ModID2[29+i]
+                    A_ErrorID[3]= A_ModID3[29+i]
+                    error_code = 28
+                    gosub send_error   
+                endif        
+            endif              
+        elseif RS485Message="F" then                'Response Firmware instruction
+            gosub Send_F_instruction
+            '  hserout2 ["Firmware instruction sent",13,10]   
+        elseif RS485Message="t" then                'Response 16 ports Temp module (old version) 
+            if A_RS485string[0]="T" and A_RS485string[1]="0" and A_RS485string[2]="0" and A_RS485string[3]="0" then
+                for ic=0 to 15
+                    a=ic+14
+                    gosub Set_Temperature
+                    gosub Temperature_Offset
+                next ic  
+            endif      
+        elseif RS485Message="B" then                'Broadcast message received
+            if mode="I" then
+                gosub Check_correct_can_module
+                gosub Communicate_CAN
+                gosub rs485_receive_init
+            endif  
+        endif
+        pointerser1=0
+        RS485busy=NO
+    endif  
+return
+
+'hier debug can
+Check_correct_can_module:
+    for t=1 to controller_in
+        if A_RS485string[1]==A_ModID1[t-1] and A_RS485string[2]==A_ModID2[t-1] and A_RS485string[3]==A_ModID3[t-1] then
+            i=t
+            'hserout2 ["Found ",dec i-1,13,10]
+            t=controller_in
+        endif
+    next t
 return
 
 Send_F_instruction:
@@ -1779,6 +1795,7 @@ RS485_poll:
           pollNr=pollNr+1
           if pollNr>controller_in then 
             pollNr=1
+            can_control_number=0
             TemperatureCount=0              'If Temperature module are spread between input modules
             CheckTemp=1                     'make sure the Temperature number is from 0 to 31
             gosub Read_eeprom_data          'Read new byte from eeprom and sent it to the input modules (CAN) and Oled module
@@ -1814,6 +1831,7 @@ RS485_poll:
               gosub send_rs485_short
               gosub prepare_rs485_receive
             elseif A_ModID0[i-1]="C" then      'CAN Module 
+              can_control_number=can_control_number+1
               gosub sent_input                                  
             endif
           endif  
@@ -2082,13 +2100,34 @@ return
 'return
 
 
+'hier debug can
 Communicate_CAN:
-  if A_RS485string[1]<>A_ModID1[i-1] or A_RS485string[2]<>A_ModID2[i-1] or A_RS485string[3]<>A_ModID3[i-1] then  'wrong device responded
-    Gosub Error_10
-  endif
-  if A_RS485string[4]="F" and A_RS485string[5]="X" and mode_com=0 then 'respond on "FX message in CLI mode
-    hserout2 ["CAN Control responded ",dec A_RS485string[1],".",dec A_RS485string[2],".",dec A_RS485string[3],".",dec A_RS485string[4],13,10]
-  endif        
+    'hserout2 ["A:Communicate CAN C ",dec A_RS485string[1],".",dec A_RS485string[2],".",dec A_RS485string[3]," ",dec A_RS485string[4]," ",dec A_RS485string[5]," ",dec A_RS485string[6]," (",dec i-1,": ",dec A_ModID1[i-1]," ",dec A_ModID2[i-1]," ",dec A_ModID3[i-1],")",13,10]
+    if A_RS485string[1]==A_ModID1[i-1] and A_RS485string[2]==A_ModID2[i-1] and A_RS485string[3]==A_ModID3[i-1] then     'Correct device responded
+        if A_RS485string[5]=="d" then   'detailed information about nr of inputs and nr of outputs
+            if mode_com==0 and debugmode==1 then    'Only check when in CLI mode and debug mode is ON
+                if can_control_number>0 AND (can_control_number-1)<MAX_CAN_CONTROLS then    
+                    if A_RS485string[6]!=A_cc_inputs[can_control_number-1] or A_RS485string[7]!=A_cc_sensors[can_control_number-1] or A_RS485string[8]!=A_cc_outputs[can_control_number-1] then
+                        A_cc_inputs[can_control_number-1]=A_RS485string[6]
+                        A_cc_sensors[can_control_number-1]=A_RS485string[7]
+                        A_cc_outputs[can_control_number-1]=A_RS485string[8]
+                        hserout2 ["CAN Control info (",dec can_control_number-1,"): Inputs: ",dec A_cc_inputs[can_control_number-1]," Sensors: ",dec A_cc_sensors[can_control_number-1]," Outputs: ",dec A_cc_outputs[can_control_number-1],13,10]
+                    ENDIF
+                endif
+            endif  
+        else
+            gosub Erase_message
+        endif            
+    else                                                                                                                'wrong device responded
+        if mode=="L" then Gosub Error_10
+    endif             
+return
+
+Erase_message:
+    'hserout2 ["B:Communicate CAN C ",dec A_RS485string[1],".",dec A_RS485string[2],".",dec A_RS485string[3]," ",dec A_RS485string[4]," ",dec A_RS485string[5]," ",dec A_RS485string[6],13,10]
+    if A_RS485string[4]="F" and A_RS485string[5]="X" and mode_com=0 then 'respond on "FX message in CLI mode
+        hserout2 ["CAN Control erase done ",dec A_RS485string[0],".",dec A_RS485string[1],".",dec A_RS485string[2],".",dec A_RS485string[3],13,10]
+    endif
 return
 
 Communicate_input:
@@ -6196,7 +6235,13 @@ interprete_cmd:
       gosub test_command 
       lookup j,["pump delay write%"],test
       cmd=157      
-      gosub test_command                                                                                                           
+      gosub test_command
+      lookup j,["erase cc inputs%"],test
+      cmd=158      
+      gosub test_command 
+      lookup j,["erase cc sensors%"],test
+      cmd=159      
+      gosub test_command                                                                                                                  
     next j
     gosub Run_instruction
 return
@@ -6237,6 +6282,11 @@ Run_instruction:
         gosub send_mes_ok    
       elseif instruction=14 and digitcount=0 then       'debug on
         debugmode=1
+        for q=0 to (MAX_CAN_CONTROLS-1)
+            A_cc_inputs[0]=255
+            A_cc_sensors[0]=255
+            A_cc_outputs[0]=255
+        next q            
         gosub send_mes_ok   
       elseif instruction=15 and digitcount=0 then       'debug off
         debugmode=0
@@ -6515,7 +6565,13 @@ Run_instruction:
       elseif instruction=156 then           
         gosub pump_delay_read
       elseif instruction=157 then           
-        gosub pump_delay_write                                                                                                        
+        gosub pump_delay_write 
+      elseif instruction=158 then   'erase CC inputs
+        erase_type=ERASE_INPUTS          
+        gosub erase_can_control
+      elseif instruction=159 then   'erase CC sensors
+        erase_type=ERASE_SENSORS         
+        gosub erase_can_control                                                                                                                
       endif                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
     endif
   else
@@ -7520,7 +7576,7 @@ Dimmer_Group_follow:
   endif
 return
 
-'hier_153
+
 output_on_overrule:
   A_DigitTotal[0]=BA_action
   t_word=A_DigitTotal[0]
@@ -7532,7 +7588,36 @@ output_on_overrule:
   endif
 return
 
-'hier_153
+        
+erase_can_control:
+    if mode=="I" and digitcount==4 then     'This instruction can only be executed when in Init mode and 4 ID's (of the CC to be erased) have been entered
+        RS485Message="B"
+        if erase_type==ERASE_SENSORS then   'Erase sensors
+            A_e[5]="S"         
+        else                                'Erase inputs
+            A_e[5]="I"
+        endif
+        A_e[0]=A_DigitTotal[0]
+        A_e[1]=A_DigitTotal[1]
+        A_e[2]=A_DigitTotal[2]
+        A_e[3]=A_DigitTotal[3]
+        A_e[4]="E"
+        A_e[6]=171
+        A_e[7]=0
+        A_e[8]=0
+        CRC2=A_e[0]+A_e[1]+A_e[2]+A_e[3]+A_e[4]+A_e[5]
+        A_e[15]="C"
+        A_e[16]=CRC2.byte1
+        A_e[17]=CRC2.byte0                
+        gosub send_rs485_long 
+        gosub send_mes_ok 
+    else                                    'Return error
+        error_code=29
+        gosub send_error    
+    endif
+return        
+
+
 output_on:
   t_word=A_DigitTotal[0]
   eep_addr.byte1=231                    'page
