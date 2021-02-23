@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 114
+BUILT               con 115
 
 HARDWARE            con 4
 BUFFER_RS232        con 122                         ' Number of bytes received from serial buffer
@@ -550,7 +550,7 @@ A_RescueCounter[4]=0
 A_RescueCounter[5]=0
 A_RescueCounter[6]=0
 A_RescueCounter[7]=0
-startup=1                                   'processor is in startup mode
+startup=YES                                   'processor is in startup mode
 NrOutputsOn=0
 RecSer1=0
 PointerSer1=0
@@ -780,7 +780,7 @@ gosub check_RCON    'check the startup bits to know if for example a watchdog re
 
 'delete
 'hserout2 ["Startup Done",13,10]
-startup=0                                   'startup is finished
+startup=NO                                   'startup is finished
   
 
 '------------------------------------------------------------------------------
@@ -2893,7 +2893,8 @@ check_queue_sub:
         asm
             reset
         endasm                                                                   
-    endif  
+    endif
+    BA_parameter_used=NO  
 return
 
 Set_Dali_Outputs:
@@ -3673,8 +3674,8 @@ Add_timer:
             A_Action[3]=239  
         endif
     else
-        if BA_parameter<250 then
-            A_Action[3]=BA_parameter.byte0 
+        if BA_parameter<251 then
+            A_Action[3]=1+BA_parameter.byte0 
         else
             A_Action[3]=239
         endif    
@@ -5699,15 +5700,18 @@ instr_BA:
     BA_type_queue=A_SerString[3]
     BA_action_queue=A_SerString[4]
     if A_SerString[5]=="P" then             'A parameter is found that must be used as an addition on the BA
+        BA_type=A_SerString[3]
+        BA_action=A_SerString[4]
         BA_parameter_used=YES
         BA_parameter=(A_SerString[6]*256)+A_SerString[7]
+        TimerRSenabled=1
         gosub check_queue_sub
     else
-        gosub Increase_queue_pointer    
+        gosub Increase_queue_pointer
+        BA_parameter_used=NO    
     endif
     x="B"
-    y="A"
-    BA_parameter_used=NO 
+    y="A" 
     gosub return_api_ok  
 return
 
@@ -6861,11 +6865,23 @@ basic_action_activate:
     'A_QueueType[queue_end]=t_word.byte0
     'A_QueueAction[queue_end]=t_word2.byte0
     BA_type_queue=t_word.byte0
-    BA_action_queue=t_word2.byte0    
+    BA_action_queue=t_word2.byte0
+    BA_parameter_used=NO    
     gosub Increase_queue_pointer
     if mode_com=0 then
       gosub send_mes_ok
     endif
+  elseif digitcount=3 and A_DigitTotal[0]<256 and A_DigitTotal[1]<256 then
+    BA_type=A_DigitTotal[0]
+    BA_action=A_DigitTotal[1]
+    e_word=A_DigitTotal[2]
+    BA_parameter_used=YES
+    BA_parameter=e_word.byte0
+    TimerRSenabled=1
+    gosub check_queue_sub
+    if mode_com=0 then
+      gosub send_mes_ok
+    endif      
   else
     error_code=23
     gosub send_error
@@ -9362,7 +9378,7 @@ Read_ThermostatMode:
   else
     ThermostatEnabled=0                     'Thermostat function of the master is disabled
   endif   
-  gosub write_thermostatmode
+  'gosub write_thermostatmode
   gosub Set_CoolingHeating
 return
 
@@ -9380,8 +9396,7 @@ activate_eeprom:
 
   gosub read_Controller_InOut
   
-  '109
-  gosub Read_ThermostatMode
+  if startup==YES then gosub Read_ThermostatMode
   
   'delete
   'hserout2 ["2: Activate Eeprom, In/Out=",dec controller_in,"/",dec controller_out,13,10]
