@@ -52,10 +52,10 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 115
+BUILT               con 117
 
 HARDWARE            con 4
-BUFFER_RS232        con 122                         ' Number of bytes received from serial buffer
+BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
 NR_OF_CMD           con 160                         ' nr of commands (command line instructions)
 RS9600              con 84
 RS19200             con 32
@@ -74,7 +74,7 @@ MAX_INPUT_MODULES   con 30
 MAX_OUTPUT_MODULES  con 30
 MAX_RS_MODULES      con 30
 MAX_PUMP_GROUPS     con 8
-MAX_DELAY_ACTIONS   con 241
+MAX_DELAY_ACTIONS   con 240
 MAX_ERRORS          con 62
 MAX_DIGIT           con 9
 MAX_E               con 20
@@ -422,6 +422,14 @@ BA_action_queue     var byte
 BA_type_queue       var byte
 can_control_number  var byte
 erase_type          var bit
+dimmer_value_eeprom_write       var   bit
+dimmer_value_eeprom_write_now   var   bit
+state_machine_eeprom_write      var   byte
+Nr_rs485_power_resets           var   byte
+dimmer_nr           var byte
+dimmer_module_nr    var byte
+ErrorCount_Can      var word
+ErrorCount_Can_Max  var word
 
 '------------ARRAYS------------------------
 A_ldr               var byte[MAX_SENSORS]            'light intensity measured on input module
@@ -621,6 +629,10 @@ broad_start_pointer=0
 broad_queue_size=0
 broad_state_machine=START
 can_control_number=0
+dimmer_value_eeprom_write=NO
+dimmer_value_eeprom_write_now=NO
+state_machine_eeprom_write=0
+Nr_rs485_power_resets=0
 CLEARWDT
 pause 80
 mode_com=0                                  'simple communication mode
@@ -648,7 +660,14 @@ for i=0 to MAX_OUTPUTS-1
   A_TimerCd[i]=0
   A_TimerSet[i]=0
   A_OutUpdate[i]=0
-  A_DimmerValue[i]=63
+  eep_addr.byte1=232                      'page 232
+  eep_addr.byte0=i
+  gosub read_eeprom 
+  if i2cdata<64 then
+    A_DimmerValue[i]=i2cdata
+  else
+    A_DimmerValue[i]=63
+  endif  
 next i
 
 for i=0 to MAX_INPUTS-1
@@ -799,7 +818,8 @@ MainLoop:
   gosub rs485_interprete
   CLEARWDT
   gosub Update_Can_leds
-  CLEARWDT    
+  CLEARWDT
+  gosub dimmer_value_write    
   if mode="L" and bootloadermode=0 then     'normal operation
     high led_red
     gosub check_button                      'check buttons
@@ -959,6 +979,83 @@ Timer3:                                     'Timer used for i2c
 '------------------------------------------------------------------------------
 'Subroutines
 '------------------------------------------------------------------------------ 
+
+Check_can_health:
+    if ErrorCount_Can>20 then
+        eep_addr.byte1=0                        'page 0
+        eep_addr.byte0=95                       'MSB max CAN Errors during period of 10 minutes before reset
+        gosub read_eeprom
+        e_word.byte1=i2cdata
+        eep_addr.byte1=0                        'page 0
+        eep_addr.byte0=96                       'LSB max CAN Errors during period of 10 minutes before reset
+        gosub read_eeprom
+        e_word.byte0=i2cdata
+        if e_word==65535 then e_word=150        'Default value is 150 (150 errors during a period of 10 minutes)    
+        if ErrorCount_Can>e_word then
+            eep_addr.byte1=0                    'page 0
+            eep_addr.byte0=97                   'Max number of resets during a period of 24 hours
+            gosub read_eeprom
+            if i2cdata==255 then i2cdata=1      'If eeprom value is not yet programmed, take default value of 1 (max number of resets per 24 hours)
+            if Nr_rs485_power_resets<i2cdata then
+                Nr_rs485_power_resets=Nr_rs485_power_resets+1
+                eep_addr.byte1=0                'page 0
+                eep_addr.byte0=98               'Total number of power resets
+                gosub read_eeprom            
+                if i2cdata==255 then i2cdata=0
+                i2cdata=i2cdata+1
+                if i2cdata<=254 then gosub write_eeprom
+                BA_type_queue=72                'Power reset 12/24V out
+                BA_action_queue=0         
+                gosub Increase_queue_pointer
+                'hserout2 ["Reset power=",dec Nr_rs485_power_resets,13,10]
+                BA_action=72
+                gosub send_EV                   'send event                
+            endif                                       
+        endif
+    endif
+    ErrorCount_Can=0    
+return
+
+dimmer_value_write:
+    if dimmer_value_eeprom_write_now==YES then
+        if state_machine_eeprom_write==0 then       'Set variables state machine
+            dimmer_nr=0
+            dimmer_module_nr=0
+            state_machine_eeprom_write=state_machine_eeprom_write+1
+        elseif state_machine_eeprom_write==1 then   'Select module nr
+            if dimmer_module_nr>controller_out then
+                state_machine_eeprom_write=3        'Exit
+            else 
+                if A_ModID0[30+dimmer_module_nr]=="D" or A_ModID0[30+dimmer_module_nr]=="d" then
+                    state_machine_eeprom_write=state_machine_eeprom_write+1
+                else
+                    dimmer_module_nr=dimmer_module_nr+1
+                endif
+            endif          
+        elseif state_machine_eeprom_write==2 then   'read/write eeprom value
+            eep_addr.byte1=232                      'page 232
+            eep_addr.byte0=(dimmer_module_nr*8)+dimmer_nr
+            gosub read_eeprom                               'byte
+            if i2cdata!=A_DimmerValue[eep_addr.byte0] then
+                i2cdata=A_DimmerValue[eep_addr.byte0]
+                gosub write_eeprom
+                'hserout2 ["Write dimmer output nr=",dec eep_addr.byte0," value=",dec A_DimmerValue[eep_addr.byte0],13,10]
+            endif
+            dimmer_nr=dimmer_nr+1
+            if dimmer_nr>7 then
+                dimmer_nr=0 
+                state_machine_eeprom_write=1
+                dimmer_module_nr=dimmer_module_nr+1
+            endif    
+        elseif state_machine_eeprom_write==3 then   'End state machine
+            dimmer_value_eeprom_write_now=NO
+            state_machine_eeprom_write=0
+        else
+            dimmer_value_eeprom_write_now=NO
+            state_machine_eeprom_write=0      
+        endif
+    endif
+return
 
 'hier_thermo
 read_setpt_eeprom:
@@ -2104,6 +2201,7 @@ return
 Communicate_CAN:
     'hserout2 ["A:Communicate CAN C ",dec A_RS485string[1],".",dec A_RS485string[2],".",dec A_RS485string[3]," ",dec A_RS485string[4]," ",dec A_RS485string[5]," ",dec A_RS485string[6]," (",dec i-1,": ",dec A_ModID1[i-1]," ",dec A_ModID2[i-1]," ",dec A_ModID3[i-1],")",13,10]
     if A_RS485string[1]==A_ModID1[i-1] and A_RS485string[2]==A_ModID2[i-1] and A_RS485string[3]==A_ModID3[i-1] then     'Correct device responded
+        if ErrorCount_Can>0 then ErrorCount_Can=ErrorCount_Can-1
         if A_RS485string[5]=="d" then   'detailed information about nr of inputs and nr of outputs
             if mode_com==0 and debugmode==1 then    'Only check when in CLI mode and debug mode is ON
                 if can_control_number>0 AND (can_control_number-1)<MAX_CAN_CONTROLS then    
@@ -2207,6 +2305,7 @@ Analyse_Input:
             if A_PressTime[v]>0 and A_PressTime[v]<dim_cycle then
               if dimmer_mem=0 and q<MAX_OUTPUTS then          'No memory function
                 A_DimmerValue[q]=63          'Light at maximum
+                dimmer_value_eeprom_write=YES
                 A_OutUpdate[q]=1
               endif
               ToggleTypeUsed=NO                            
@@ -2352,7 +2451,12 @@ Check_PulseCounter:
 return
 
 Add_ErrorCount:
-  If ErrorTmp<MAX_ERRORS and A_ErrorCount[ErrorTmp]<64999 then A_ErrorCount[ErrorTmp]=A_ErrorCount[ErrorTmp]+1
+    If ErrorTmp<MAX_ERRORS and A_ErrorCount[ErrorTmp]<64999 then 
+        A_ErrorCount[ErrorTmp]=A_ErrorCount[ErrorTmp]+1
+        if A_ModID0[ErrorTmp]="C" then      'Check if it's a CAN Control
+            if ErrorCount_Can<64999 then ErrorCount_Can=ErrorCount_Can+1
+        endif
+    endif    
 return
 
 empty_e:
@@ -3491,6 +3595,7 @@ output_dim:
       A_DimmerValue[q]=A_DimmerValue[q]-v
       if A_DimmerValue[q]>63 or A_DimmerValue[q]<dim_minimum then A_DimmerValue[q]=dim_minimum  
     endif
+    dimmer_value_eeprom_write=YES
     gosub Dimmer_Group_follow
   endif
 return
@@ -3912,15 +4017,18 @@ Output_OnOff:
     gosub all_outputs_off
   elseif BA_type=165 and q<MAX_OUTPUTS then   'Light on at minimum dimmer level
     A_DimmerValue[q]=dim_minimum
+    dimmer_value_eeprom_write=YES
     gosub output_on
   elseif BA_type=166 and q<MAX_OUTPUTS then   'Light on at maximum dimmer level
     A_DimmerValue[q]=63
+    dimmer_value_eeprom_write=YES
     gosub output_on
   elseif BA_type=167 and q<MAX_OUTPUTS then   'Light on, decrease dimmer value with 5
     A_DimmerValue[q]=A_DimmerValue[q]+5
     if A_DimmerValue[q]>63 then
       A_DimmerValue[q]=63
     endif
+    dimmer_value_eeprom_write=YES
     gosub output_on
   elseif BA_type=168 and q<MAX_OUTPUTS then   'Light on, increase dimmer value with 5
     if A_DimmerValue[q]<10 or (A_DimmerValue[q]-5)<dim_minimum then
@@ -3928,11 +4036,14 @@ Output_OnOff:
     else
       A_DimmerValue[q]=A_DimmerValue[q]-5
     endif
+    dimmer_value_eeprom_write=YES
     gosub output_on
   elseif BA_type=169 and q<MAX_OUTPUTS then   'set dimmer value at minimum
-    A_DimmerValue[q]=dim_minimum               
+    A_DimmerValue[q]=dim_minimum
+    dimmer_value_eeprom_write=YES               
   elseif BA_type=170 and q<MAX_OUTPUTS then   'set dimmer value at maximum
     A_DimmerValue[q]=63
+    dimmer_value_eeprom_write=YES
   elseif BA_type=171 then             'all lights off of a certain floor level or group
     level=q
     gosub all_lights_off      
@@ -3944,9 +4055,11 @@ Output_OnOff:
     gosub all_lights_toggle 
   elseif BA_type>175 and BA_type<185 and q<MAX_OUTPUTS then  'Light on at 10%-90%
     A_DimmerValue[q]=(BA_type-175)*6
+    dimmer_value_eeprom_write=YES
     gosub output_on 
   elseif BA_type>184 and BA_type<195 and q<MAX_OUTPUTS then  'Toggle Light at 10%-100%
     A_DimmerValue[q]=(BA_type-184)*6
+    dimmer_value_eeprom_write=YES
     gosub Toggle_lights
   elseif BA_type>194 and BA_type<201 and q<MAX_OUTPUTS then  'Switch on light with timer setting between 2m30 and 1h20
     gosub set_output_on    
@@ -4239,6 +4352,7 @@ simple_action_on:
   if a<MAX_OUTPUTS then
     if A_ModID0[30+(a/8)]="D" or A_ModID0[30+(a/8)]="d" then             'only when dimmer
       A_DimmerValue[a]=A_Action[4]
+      dimmer_value_eeprom_write=YES
     else
       A_DimmerValue[a]=63
     endif
@@ -5202,6 +5316,7 @@ instr_wd2:
   if y<64 and x<MAX_OUTPUTS then    'Dimmer & output value are valid
     A_DimmerValue[x]=y
     write_yes=1
+    dimmer_value_eeprom_write=YES
     A_WriteYesMod[x/8]=1    
   endif
   hserout2["wd",CID,x,A_DimmerValue[x],0,0,0,0,0,0,0,0,0,0,0,13,10]
@@ -5500,7 +5615,7 @@ send_FD_Data:
   for t=7 to 75
     hserout [A_SerString[t]]
   next t
-  hserout [13,10,13,10]
+  hserout [13,10]
   gosub low_rs485_dir                       'Receive mode
 return
 
@@ -5515,7 +5630,7 @@ send_Fx_Data:
   for t=7 to 15
     hserout [A_SerString[t]]
   next t
-  hserout [13,10,13,10]
+  hserout [13,10]
   gosub low_rs485_dir                       'Receive mode
 return
 
@@ -5525,14 +5640,14 @@ return
 
 send_rs485_short:
   high RS485_DIR                            'Send mode
-  hserout ["ST",A_e[0],A_e[1],A_e[2],A_e[3],A_e[4],A_e[5],A_e[6],A_e[7],A_e[8],13,10,13,10]
+  hserout ["ST",A_e[0],A_e[1],A_e[2],A_e[3],A_e[4],A_e[5],A_e[6],A_e[7],A_e[8],13,10]
   'pauseus 100
   gosub low_rs485_dir                       'Receive mode
 return
 
 send_rs485_long:
   high RS485_DIR                            'Send mode
-  hserout ["ST",A_e[0],A_e[1],A_e[2],A_e[3],A_e[4],A_e[5],A_e[6],A_e[7],A_e[8],A_e[9],A_e[10],A_e[11],A_e[12],A_e[13],A_e[14],A_e[15],A_e[16],A_e[17],13,10,13,10]
+  hserout ["ST",A_e[0],A_e[1],A_e[2],A_e[3],A_e[4],A_e[5],A_e[6],A_e[7],A_e[8],A_e[9],A_e[10],A_e[11],A_e[12],A_e[13],A_e[14],A_e[15],A_e[16],A_e[17],13,10]
   'pauseus 100
   gosub low_rs485_dir                       'Receive mode   
 return
@@ -5792,6 +5907,7 @@ instr_DI:
   if A_SerString[2]="*" then                  'max dimmer
     if LastDimmer<MAX_OUTPUTS then
       A_DimmerValue[LastDimmer]=63
+      dimmer_value_eeprom_write=YES
       write_yes=1
       A_OutUpdate[LastDimmer]=1                           'write outputs 
       for ic=1 to controller_out
@@ -7344,6 +7460,7 @@ dim_min:
     else
       A_DimmerValue[t_word.byte0]=dim_minimum
     endif
+    dimmer_value_eeprom_write=YES
     write_yes=1
     if ((t_word.byte0)/8)<MAX_OUTPUT_MODULES then A_WriteYesMod[(t_word.byte0)/8]=1
     A_OutUpdate[t_word.byte0]=1
@@ -7363,6 +7480,7 @@ dim_plus:
       A_DimmerValue[t_word.byte0]=63
     endif
     write_yes=1
+    dimmer_value_eeprom_write=YES
     if ((t_word.byte0)/8)<MAX_OUTPUT_MODULES then A_WriteYesMod[(t_word.byte0)/8]=1
     A_OutUpdate[t_word.byte0]=1
     gosub send_mes_ok
@@ -7570,6 +7688,7 @@ Dimmer_Group_follow:
         BA_action_queue=i2cdata        
         gosub Increase_queue_pointer
         A_DimmerValue[i2cdata]=A_DimmerValue[r]
+        dimmer_value_eeprom_write=YES
       elseif v.bit0=0 and z.bit0=1 then
         'A_QueueType[queue_end]=160     'Output Off
         'A_QueueAction[queue_end]=i2cdata
@@ -7648,6 +7767,7 @@ output_on:
         t_word2=A_DigitTotal[1]
         if A_ModID0[30+y]="D" or A_ModID0[30+y]="d" then             'only when dimmer
           A_DimmerValue[t_word.byte0]=t_word2.byte0
+          dimmer_value_eeprom_write=YES
         else
           A_DimmerValue[t_word.byte0]=63
         endif
@@ -7657,6 +7777,7 @@ output_on:
         t_word2=A_DigitTotal[1]
         if A_ModID0[30+y]="D" or A_ModID0[30+y]="d" then             'only when dimmer
           A_DimmerValue[t_word.byte0]=t_word2.byte0
+          dimmer_value_eeprom_write=YES
         else
           A_DimmerValue[t_word.byte0]=63
         endif
@@ -8444,7 +8565,7 @@ sensor_not_connected:
 return
 
 error_list:
-  hserout2 ["i2c errors: ",dec i2cError,"/",dec i2cError2," ",dec PORTD.5,":",dec PORTD.6," PC",dec pollcheck,13,10] 
+  hserout2 ["i2c errors: ",dec i2cError,"/",dec i2cError2," ",dec PORTD.5,":",dec PORTD.6," PC",dec pollcheck," CC",dec ErrorCount_Can,13,10] 
   if controller_in =0 then
     hserout2 ["Empty input list",13,10]
   else
@@ -9981,6 +10102,10 @@ read_clock:
           BroadId=0
           gosub Add_Broad_queue
           UpdateCanLeds=1   'Update All CAN Leds
+          if dimmer_value_eeprom_write==YES then
+            dimmer_value_eeprom_write=NO 
+            dimmer_value_eeprom_write_now=YES
+          endif 
         endif        
       endif      
       if seconds=0 then
@@ -9990,9 +10115,12 @@ read_clock:
           gosub read_day
           gosub read_hours
           gosub thermostat_timing12
+          if hours==0 then Nr_rs485_power_resets=0
+          gosub Check_can_health
         elseif minutes=10 or minutes=20 or minutes=30 or minutes=40 or minutes=50 then
           gosub Set_CoolingHeating
-          gosub thermostat_timing12          
+          gosub thermostat_timing12
+          gosub Check_can_health          
         endif
         gosub check_schedule_queue
       endif  
@@ -10454,7 +10582,7 @@ return
 Temp_receive:                               'routine used to check Temperature in normal mode (mode="L")
   if Temp_Mod_installed=1 then              'Temperature module 16 Temperature sensors
     high RS485_DIR                          'Send mode
-    hserout ["tmT000T",0,13,10,13,10]
+    hserout ["tmT000T",0,13,10]
     gosub low_rs485_dir                     'Receive mode
     RS485Message="t"
     gosub prepare_rs485_receive
