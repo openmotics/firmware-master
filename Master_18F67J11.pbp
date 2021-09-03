@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 118
+BUILT               con 121
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
@@ -430,6 +430,7 @@ dimmer_nr           var byte
 dimmer_module_nr    var byte
 ErrorCount_Can      var word
 ErrorCount_Can_Max  var word
+shutter_nr          var byte
 
 '------------ARRAYS------------------------
 A_ldr               var byte[MAX_SENSORS]            'light intensity measured on input module
@@ -540,8 +541,8 @@ T2CON.2=1                                   'timer2 started
                             
 '-------------INIT VARIABLES--------------
 BA_parameter_used=NO
-All_stores_locked=0
-All_stores_overule_locked=0
+All_stores_locked=NO
+All_stores_overule_locked=NO
 A_PumpOn[0]=0
 A_PumpOn[1]=0
 A_PumpOn[2]=0
@@ -2834,11 +2835,14 @@ check_queue_sub:
     elseif BA_type>206 and BA_type<212 then 'Execute group Action when input is pressed longer than x seconds
         Gosub Timer_group         
     elseif BA_type>127 and BA_type<144 then 'Thermostat function        
-        gosub Thermostat_action  
+        gosub Thermostat_action
+        gosub Send_thermostat_event  
     elseif BA_type>144 and BA_type<150 then 'Thermostat function        
         gosub Thermostat_action
+        gosub Send_thermostat_event
     elseif BA_type>89 and BA_type<94 then  'Thermostat function Multi-Tenant        
-        gosub Thermostat_action    
+        gosub Thermostat_action
+        gosub Send_thermostat_event    
     elseif BA_type=68 then              'Virtual input press
         gosub Virtual_input_press
     elseif BA_type=69 then              'Virtual input release
@@ -2982,15 +2986,19 @@ check_queue_sub:
     elseif BA_type=60 then              'Sent Event
         gosub Send_EV    
     elseif BA_type=80 then              'Cooling mode?
-        gosub Set_Cooling 
+        gosub Set_Cooling
+        gosub Send_thermostat_event 
     elseif BA_type=81 then              'Enable/Disable Airco (RTD-10)
-        gosub Set_Airco 
+        gosub Set_Airco
+        gosub Send_thermostat_event 
     elseif BA_type=82 then              'Set Permanent Manual Mode
         u=1
         gosub SetClear_PermanentManual
+        gosub Send_thermostat_event
     elseif BA_type=83 then              'Clear Permanent Manual Mode
         u=0
-        gosub SetClear_PermanentManual        
+        gosub SetClear_PermanentManual
+        gosub Send_thermostat_event        
     elseif BA_type=8 then               'Reset all errors and bring modules that are offline back online
         gosub Reset_error                     
     elseif BA_type=254 then             'reset processor
@@ -2999,6 +3007,22 @@ check_queue_sub:
         endasm                                                                   
     endif
     BA_parameter_used=NO  
+return
+
+Send_thermostat_event:
+    if ThermostatEnabled==0 then    'send event when thermostats are disabled
+        if mode_com=1 then
+            gosub empty_e
+            cid=0
+            A_e[0]="E"
+            A_e[1]="V"
+            A_e[2]=cid    'CID=0
+            A_e[3]=2
+            A_e[4]=BA_type
+            A_e[5]=BA_action
+            gosub send_api     
+        endif    
+    endif
 return
 
 Set_Dali_Outputs:
@@ -3602,10 +3626,11 @@ return
 
 ' Store/Shutter actions when LargeInstallation is enabled ---------------------
 StoreShutter_action:
-    if BA_Action<120 then   
-        if BA_type=100 then                 'Store x up
+    if BA_Action<120 then                   'Max 120 shutters 
+        if BA_type==100 then                'Store x up
             x=BA_Action//4
             y=BA_Action/4
+            shutter_nr=BA_action
             gosub Store_Up
             i_bit=1                                 'up
             if TimerRSenabled=1 then
@@ -3616,6 +3641,7 @@ StoreShutter_action:
         elseif BA_type=101 then             'Store x down
             x=BA_Action//4
             y=BA_Action/4
+            shutter_nr=BA_action
             gosub Store_down
             i_bit=0                                 'down
             if TimerRSenabled=1 then
@@ -3623,7 +3649,7 @@ StoreShutter_action:
                 gosub Remove_timer                    'Erase
                 gosub add_timer                       'Add
             endif       
-        elseif BA_type=102 then             'Store x stop
+        elseif BA_type=102 and All_stores_locked==NO then             'Store x stop
             x=BA_Action//4
             y=BA_Action/4
             gosub Store_Stop
@@ -3646,7 +3672,7 @@ StoreShutter_action:
             gosub Remove_timer                      'Erase
             i_bit=0                                 'Down
             gosub add_timer                         'Add
-        elseif BA_type=106 then             'Group x Stop               
+        elseif BA_type=106 and All_stores_locked==NO then             'Group x Stop               
             c=0
             gosub Store_group
             A_Action[4]=106                         'Erase group Store from queue
@@ -3672,15 +3698,28 @@ StoreShutter_action:
             gosub Prep_Group_Action
         elseif BA_type=112 then             'Enable/disable Automatic stop timer when a Roller/Shutter is moved up/down
             if BA_Action=0 then
-                TimerRSenabled=0                                   'Automatic stop timer disabled
+                TimerRSenabled=0                            'Automatic stop timer disabled
             else
-                TimerRSenabled=1                                   'Automatic stop timer enabled
-            endif     
-        endif
-    else
-        if All_stores_overule_locked=1 then       'overule is active
+                TimerRSenabled=1                            'Automatic stop timer enabled
+            endif
+        elseif BA_type=113 then             'Enable/disable Roller/shutter Lock functionality
+            if BA_Action=0 then
+                All_stores_locked=NO                        'Lock functionality disabled
+                i2cdata=255
+                eep_addr.byte0=39                           'address
+                eep_addr.byte1=0                            'page
+                gosub write_eeprom                           
+            else
+                All_stores_locked=YES                       'Lock functionality enabled
+                i2cdata=0
+                eep_addr.byte0=39                           'address
+                eep_addr.byte1=0                            'page
+                gosub write_eeprom      
+            endif                                        
+
+        elseif All_stores_overule_locked=YES then       'overule is active
             if BA_type=102 then             'Store x stop
-                All_stores_overule_locked=0
+                All_stores_overule_locked=NO
                 x=BA_Action//4
                 y=BA_Action/4
                 gosub Store_Stop
@@ -3688,29 +3727,14 @@ StoreShutter_action:
                 gosub Remove_timer                      'Erase
             endif  
             if BA_type=106 then             'Group x Stop
-                All_stores_overule_locked=0               
+                All_stores_overule_locked=NO               
                 c=0
                 gosub Store_group
                 A_Action[4]=106                         'Erase group Store from queue
                 gosub Remove_timer                      'Erase
             endif            
         endif  
-    endif       
-    if BA_type=113 then          'Enable/disable Roller/shutter Lock functionality
-        if BA_Action=0 then
-            All_stores_locked=0                         'Lock functionality disabled
-            i2cdata=255
-            eep_addr.byte0=39                           'address
-            eep_addr.byte1=0                            'page
-            gosub write_eeprom                           
-        else
-            All_stores_locked=1                         'Lock functionality enabled
-            i2cdata=0
-            eep_addr.byte0=39                           'address
-            eep_addr.byte1=0                            'page
-            gosub write_eeprom      
-        endif                       
-    endif  
+    endif        
 return
 
 Prep_Group_Action:
@@ -3728,6 +3752,9 @@ Return
 
 Prep_Store_action:
   c=4
+  x=BA_Action//4
+  y=BA_Action/4
+  shutter_nr=BA_action  
   gosub Store_1Action
   A_Action[4]=102                           'Stop Individual Store
   gosub Remove_timer                      'Erase
@@ -3790,102 +3817,134 @@ Add_timer:
 return
 
 Store_group:
-  if controller_out_RS>0 and controller_out_RS<MAX_RS_MODULES then
-    for ic=1 to controller_out_RS           'Check all Shutter/Store controllers in Large Installation mode
-      for a=0 to 3                          'Check all stores per module
-        for b=0 to 1                        'Check the 2 groups per store
-          eep_addr.byte1 = 63                   'page
-          eep_addr.byte0 = ((ic-1)*8)+(a*2)+b
-          Gosub read_eeprom
-          if i2cdata=BA_action then       'Group found, execute Up for that store
-            x=(((ic-1)*4)+a)//4
-            y=(((ic-1)*4)+a)/4
-            if c=2 then
-              gosub Store_up
-            elseif c=1 then
-              gosub Store_down
-            elseif c=3 then
-              gosub store_1action 
-            else
-              gosub Store_Stop
-            endif      
-          endif
-        next b
-      next a
-    next ic
-    if c=3 and w=1 then                         'group up/stop/down/stop has been performed
-      if StoreMove=0 then
-        v=BA_action
-        if A_ValBit[90+v]=0 then
-          A_ValBit[90+v]=1
-        else
-          A_ValBit[90+v]=0
+    if controller_out_RS>0 and controller_out_RS<MAX_RS_MODULES then
+        for ic=1 to controller_out_RS           'Check all Shutter/Store controllers in Large Installation mode
+            for a=0 to 3                          'Check all stores per module
+                for b=0 to 1                        'Check the 2 groups per store
+                    eep_addr.byte1 = 63                   'page
+                    eep_addr.byte0 = ((ic-1)*8)+(a*2)+b
+                    Gosub read_eeprom
+                    if i2cdata=BA_action then       'Group found, execute Up for that store
+                        x=(((ic-1)*4)+a)//4
+                        y=(((ic-1)*4)+a)/4
+                        shutter_nr=(((ic-1)*4)+a)
+                        if c=2 then
+                            gosub Store_up
+                        elseif c=1 then
+                            gosub Store_down
+                        elseif c=3 then
+                            gosub store_1action 
+                        else
+                            gosub Store_Stop
+                        endif      
+                    endif
+                next b
+            next a
+        next ic
+        if c=3 and w=1 then                         'group up/stop/down/stop has been performed
+            if StoreMove=0 then
+                eep_addr.byte0=BA_Action                    'address
+                eep_addr.byte1=234                          'page
+                gosub read_eeprom                             
+                'if A_ValBit[90+v]=0 then
+                if i2cdata==0 then
+                    'A_ValBit[90+v]=1
+                    i2cdata=1
+                    gosub Write_GroupDirection_in_eeprom
+                else
+                    'A_ValBit[90+v]=0
+                    i2cdata=0
+                    gosub Write_GroupDirection_in_eeprom
+                endif
+                ValBitNr=90+v
+                gosub send_EV2    
+            endif
         endif
-        ValBitNr=90+v
-        gosub send_EV2    
-      endif
-    endif
-    c=0
-  endif  
+        c=0
+    endif  
 return
 
 Store_1Action:
-  z=%00000011
-  z=z<<(x*2)
-  u=A_OutputRS[y]&z
-  v=BA_action
-  if c=3 and w=0 then                       'Check if any store is moving (group only)
-    if u<>0 then                            'Store is moving
-      StoreMove=1
-    endif
-  elseif c=3 and w=1 then                   'Execute Action (stop, or up or down)(group only)
-    if StoreMove=1 then
-      gosub Store_Stop
-    else
-      if UpDwn=1 then
-        if A_ValBit[90+v]=0 then      
-          gosub Store_Up
-        else
-          gosub store_down
-        endif
-      else
-        if UpDir=1 then
-          gosub Store_Up
-        else
-          gosub store_down
-        endif
-      endif    
-    endif
-  else                                      'Execute Action (stop, or up or down)(Non group)
-    x=BA_action//4
-    y=BA_action/4
     z=%00000011
-    z=z<<(x*2)    
+    z=z<<(x*2)
     u=A_OutputRS[y]&z
-    if u=0 then                             'Store is not moving
-      StoreMove=0
-      if UpDwn=1 then
-        if A_ValBit[120+v]=0 then                              
-          gosub Store_Up
-          A_ValBit[120+v]=1
-        else
-          gosub store_down
-          A_ValBit[120+v]=0
+    v=BA_action
+    if c=3 and w=0 then                       'Check if any store is moving (group only)
+        if u<>0 then                            'Store is moving
+            StoreMove=1
         endif
-        ValBitNr=120+v
-        gosub send_EV2
-      else
-        if UpDir=1 then
-          gosub Store_Up
+    elseif c=3 and w=1 then                   'Execute Action (stop, or up or down)(group only)
+        if StoreMove=1 then
+            gosub Store_Stop
         else
-          gosub store_down
-        endif     
-      endif    
-    else                                      'Store is moving
-      StoreMove=1
-      gosub Store_Stop
+            if UpDwn=1 then
+                eep_addr.byte0=BA_Action                    'address
+                eep_addr.byte1=234                          'page
+                gosub read_eeprom             
+                'if A_ValBit[90+v]=0 then
+                if i2cdata==0 then      
+                    gosub Store_Up
+                else
+                    gosub store_down
+                endif
+            else
+                if UpDir=1 then
+                    gosub Store_Up
+                else
+                    gosub store_down
+                endif
+            endif    
+        endif
+    else                                      'Execute Action (stop, or up or down)(Non group)
+        x=BA_action//4
+        y=BA_action/4
+        z=%00000011
+        z=z<<(x*2)    
+        u=A_OutputRS[y]&z
+        if u=0 then                             'Store is not moving
+            StoreMove=0
+            if UpDwn=1 then
+                eep_addr.byte0=BA_Action                    'address
+                eep_addr.byte1=233                          'page
+                gosub read_eeprom                
+                'if A_ValBit[120+v]=0 then
+                if i2cdata==0 then                              
+                    gosub Store_Up
+                    'A_ValBit[120+v]=1
+                else
+                    gosub store_down
+                    'A_ValBit[120+v]=0        
+                endif
+                'ValBitNr=120+v
+                'gosub send_EV2
+            else
+                if UpDir=1 then
+                    gosub Store_Up
+                else
+                    gosub store_down
+                endif     
+            endif    
+        else                                      'Store is moving
+            StoreMove=1
+            gosub Store_Stop
+        endif
+    endif   
+return
+
+Write_StoreDirection_in_eeprom:
+    if BA_parameter_used==NO then
+        eep_addr.byte0=shutter_nr                   'address
+        eep_addr.byte1=233                          'page
+        gosub write_eeprom
     endif
-  endif   
+return
+
+Write_GroupDirection_in_eeprom:
+    if BA_parameter_used==NO then
+        eep_addr.byte0=BA_Action                    'address
+        eep_addr.byte1=234                          'page
+        gosub write_eeprom
+    endif
 return
 
 Get_UpDownConfig:
@@ -3900,23 +3959,31 @@ Get_UpDownConfig:
 return
 
 Store_Up:
-    gosub Store_stop
-    i_bit=1
-    z=%00000001
-    gosub Get_UpDownConfig  
-    if y<MAX_RS_MODULES then A_OutputRS[y]=A_OutputRS[y]|z
-    write_yes_rs=1
-    if y<MAX_RS_MODULES then A_WriteYesModRS[y]=1  
+    if All_stores_locked==NO then
+        gosub Store_stop
+        i2cdata=1
+        gosub Write_StoreDirection_in_eeprom    
+        i_bit=1
+        z=%00000001
+        gosub Get_UpDownConfig  
+        if y<MAX_RS_MODULES then A_OutputRS[y]=A_OutputRS[y]|z
+        write_yes_rs=1
+        if y<MAX_RS_MODULES then A_WriteYesModRS[y]=1
+    endif      
 return
 
 Store_Down:
-    gosub Store_stop
-    i_bit=0
-    z=%00000001
-    gosub Get_UpDownConfig  
-    if y<MAX_RS_MODULES then A_OutputRS[y]=A_OutputRS[y]|z
-    write_yes_rs=1
-    if y<MAX_RS_MODULES then A_WriteYesModRS[y]=1  
+    if All_stores_locked==NO then
+        gosub Store_stop
+        i2cdata=0
+        gosub Write_StoreDirection_in_eeprom    
+        i_bit=0
+        z=%00000001
+        gosub Get_UpDownConfig  
+        if y<MAX_RS_MODULES then A_OutputRS[y]=A_OutputRS[y]|z
+        write_yes_rs=1
+        if y<MAX_RS_MODULES then A_WriteYesModRS[y]=1
+    endif     
 return
 
 Store_Stop:
@@ -9458,22 +9525,22 @@ Read_Controller_InOut:
 return
 
 Check_LIM:   'Check if Large installation can be enabled automatically
-  eep_addr.byte0=27                         'address
-  eep_addr.byte1=0                          'page
-  gosub read_eeprom   
-  if i2cdata=255 then                       'Large Installation mode is not yet enabled
-    if controller_in=0 and controller_out=0 then  'Enable Large Installation Mode
-      LargeInstallation=1
-      eep_addr.byte0=27                         'address
-      eep_addr.byte1=0                          'page
-      i2cdata=0
-      gosub write_eeprom      
+    eep_addr.byte0=27                         'address
+    eep_addr.byte1=0                          'page
+    gosub read_eeprom   
+    if i2cdata=255 then                       'Large Installation mode is not yet enabled
+        if controller_in=0 and controller_out=0 then  'Enable Large Installation Mode
+            LargeInstallation=1
+            eep_addr.byte0=27                         'address
+            eep_addr.byte1=0                          'page
+            i2cdata=0
+            gosub write_eeprom      
+        else
+            LargeInstallation=0
+        endif
     else
-      LargeInstallation=0
+        LargeInstallation=1
     endif
-  else
-    LargeInstallation=1
-  endif
 return
 
 Read_ThermostatMode:
@@ -9521,6 +9588,15 @@ activate_eeprom:
   
   'delete
   'hserout2 ["2: Activate Eeprom, In/Out=",dec controller_in,"/",dec controller_out,13,10]
+
+  eep_addr.byte0=40                         'address
+  eep_addr.byte1=0                          'page
+  gosub read_eeprom 
+  if i2cdata=255 then
+    ThermostatEnabled=1                     'Thermostat function of the master is enabled
+  else
+    ThermostatEnabled=0                     'Thermostat function of the master is disabled
+  endif
 
   'RS485 timeout value
   eep_addr.byte0=4                          'address
@@ -9818,9 +9894,9 @@ activate_eeprom:
   eep_addr.byte1=0                          'page
   gosub read_eeprom   
   if i2cdata=0 then                      
-    all_stores_locked=1                     'stores are locked                    
+    all_stores_locked=YES                   'stores are locked                    
   else
-    all_stores_locked=0                     'stores are not locked
+    all_stores_locked=NO                    'stores are not locked
   endif  
 
   
@@ -10449,25 +10525,25 @@ check_timer_queue:                          'check timer queue for intelligent a
 return
 
 check_timer_count:
-  if A_TimerSeconds[i-1]>0 and A_TimerSeconds[i-1]<250 and TimerQueueEn=1 then
-    d=A_TimerInput[i-1] 
-    if (i-1)<timer_queue then A_TimerSeconds[i-1]=A_TimerSeconds[i-1]-1 
-    A_InputDelayAction[d]=0                   'delayed Action is not executed so the other actions in the queue can be executed when input is off  
-    if A_TimerSeconds[i-1]=0 then            'if A_TimerSeconds=0 then execute Action for both "input pressed" and "delayed Action"
-      A_InputDelayAction[d]=1                 'delayed Action is executed so don't execute the other actions in the queue
-      gosub add_timer_action                'only for delayed execution of an Action
-    endif    
-  endif  
+    if A_TimerSeconds[i-1]>0 and A_TimerSeconds[i-1]<250 and TimerQueueEn=1 then
+        d=A_TimerInput[i-1] 
+        if (i-1)<timer_queue then A_TimerSeconds[i-1]=A_TimerSeconds[i-1]-1 
+        A_InputDelayAction[d]=0                   'delayed Action is not executed so the other actions in the queue can be executed when input is off  
+        if A_TimerSeconds[i-1]=0 then            'if A_TimerSeconds=0 then execute Action for both "input pressed" and "delayed Action"
+            A_InputDelayAction[d]=1                 'delayed Action is executed so don't execute the other actions in the queue
+            gosub add_timer_action                'only for delayed execution of an Action
+        endif    
+    endif  
 return  
 
 add_timer_action:
-  if A_TimerType[i-1]=102 or A_TimerType[i-1]=106 then All_stores_overule_locked=1    'If timer based group stop or individual stop, ignore stores_locked function
-  'A_QueueType[queue_end]=A_TimerType[i-1]
-  'A_QueueAction[queue_end]=A_TimerAction[i-1]
-  BA_type_queue=A_TimerType[i-1]
-  BA_action_queue=A_TimerAction[i-1]
-  gosub Increase_queue_pointer
-  if (i-1)<timer_queue then A_TimerSeconds[i-1]=0 
+    if A_TimerType[i-1]=102 or A_TimerType[i-1]=106 then All_stores_overule_locked=YES    'If timer based group stop or individual stop, ignore stores_locked function
+    'A_QueueType[queue_end]=A_TimerType[i-1]
+    'A_QueueAction[queue_end]=A_TimerAction[i-1]
+    BA_type_queue=A_TimerType[i-1]
+    BA_action_queue=A_TimerAction[i-1]
+    gosub Increase_queue_pointer
+    if (i-1)<timer_queue then A_TimerSeconds[i-1]=0 
 return
 
 clean_timer_queue:                          'clean the queue of the non used actions anymore
