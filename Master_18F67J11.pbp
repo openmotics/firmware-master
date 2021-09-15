@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 121
+BUILT               con 123
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
@@ -431,6 +431,7 @@ dimmer_module_nr    var byte
 ErrorCount_Can      var word
 ErrorCount_Can_Max  var word
 shutter_nr          var byte
+InputResult         var byte
 
 '------------ARRAYS------------------------
 A_ldr               var byte[MAX_SENSORS]            'light intensity measured on input module
@@ -1188,7 +1189,7 @@ Reset_i2c:
 return
 
 pump_check:
-  if PumpCheckNow=1 then
+  if PumpCheckNow=1 and ThermostatEnabled=1 then
     if PumpCheckCounter<8 then
       eep_addr.byte1=144+(59*thermostatCooling)                    'page 144 or 203
       eep_addr.byte0=PumpCheckCounter  
@@ -2353,7 +2354,7 @@ return
 
 RS232_message:
   if InputDebug=1 then
-    hserout2 ["Input (",press_state,")=",dec v," selected output=",dec q,13,10]
+    hserout2 ["Input (",dec press_state,")=",dec v," selected output=",dec q,13,10]
   endif
   if mode_com=1 and AutResponseIL=1 then    'only in API mode and when Auto Response Output List bit is set
     gosub send_IL
@@ -6889,6 +6890,11 @@ Calculate_invert:
   z=z.bit0
 return
 
+Calculate_input:
+  InputResult=A_Input[x-1]>>y
+  InputResult=InputResult.bit0
+return
+
 input_invert_write:
   if digitcount=2 and A_DigitTotal[0]<240 and A_DigitTotal[1]<2 then
     t_word=A_DigitTotal[0]
@@ -8702,7 +8708,8 @@ input_list:
       length=8                              'Max number of characters
       Spaces=0
       gosub calculate_invert
-      hserout2 [dec3 a," ",dec z," "]    
+      gosub Calculate_input
+      hserout2 [dec3 a," ",dec InputResult," (",dec z,") "]    
       gosub eeprom_input_address            'calculate eeprom input address
       gosub display_name                    'display input or output name
       hserout2 [" -> ",dec3 A_SelOutput[a]]
@@ -9151,15 +9158,16 @@ convert_text:
 return
 
 
-Bus_init:                                      
+Bus_init:                                     
   mode="I"                                  'Bus in initialization mode
   broad1="I"
   broad2="I"
   BroadID=0
+  broadData=0
   low led_red
   'BroadFromQueue=0
-  gosub Add_Broad_queue                          'send initialization code (broadcast) on RS485 network
-  gosub Add_Broad_queue         
+  pause 100
+  gosub send_broad_immediatly             'send message      
   'InterpreteSer1=0
   RS485busy=NO
   RCSTA1.4=1                                'enable receiving serial 1 
@@ -9170,10 +9178,11 @@ Bus_live:
   broad1="L"
   broad2="L"
   BroadID=0
+  broadData=0
   high led_red
   'BroadFromQueue=0
-  gosub Add_Broad_queue                          'send initialization code (broadcast) on RS485 network
-  gosub Add_Broad_queue
+  pause 100
+  gosub send_broad_immediatly             'send message
   write_yes=1                               'write outputs
   for u=1 to controller_out
     if u<MAX_OUTPUT_MODULES+1 then A_WriteYesMod[u-1]=1
