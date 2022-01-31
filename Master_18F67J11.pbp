@@ -52,17 +52,17 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 123
+BUILT               con 124
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
-NR_OF_CMD           con 160                         ' nr of commands (command line instructions)
+NR_OF_CMD           con 161                         ' nr of commands (command line instructions)
 RS9600              con 84
 RS19200             con 32
 PAUSE_VALUE         con 5                           'pause between putting RS485 in send mode and effectively sending data
 BUFFER_RS485        con 21                          'Number of bytes receices from RS485 bus
 QUEUE_MAX           con 95
-SCHED_QUEUE_MAX     con 60
+SCHED_QUEUE_MAX     con 57
 TIMER_QUEUE         con 50
 MAX_THERMOSTATS     con 32                          'put at 24 because RAM of DS1307, maximum 32 !!!
 PULSECOUNTERS       con 24
@@ -310,6 +310,9 @@ minutes             var byte
 seconds             var byte
 seconds_old         var byte
 days                var byte
+date                var byte
+month               var byte
+year                var byte
 NumberOfChar        var byte
 PowerSafe           var bit
 Spaces              var bit 
@@ -798,7 +801,7 @@ CLEARWDT
 'Gosub activate_eeprom                       'Copy eeprom values into RAM
 
 gosub check_RCON    'check the startup bits to know if for example a watchdog reset has happened
-
+gosub read_date
 'delete
 'hserout2 ["Startup Done",13,10]
 startup=NO                                   'startup is finished
@@ -5613,6 +5616,7 @@ instr_st:
   gosub read_minutes
   gosub read_hours
   gosub read_day
+  gosub read_date
   gosub print_ds1307
   gosub empty_e
   A_e[0]="s"
@@ -6429,7 +6433,10 @@ interprete_cmd:
       gosub test_command 
       lookup j,["erase cc sensors%"],test
       cmd=159      
-      gosub test_command                                                                                                                  
+      gosub test_command 
+      lookup j,["date write%"],test
+      cmd=160      
+      gosub test_command                                                                                                                       
     next j
     gosub Run_instruction
 return
@@ -6759,7 +6766,9 @@ Run_instruction:
         gosub erase_can_control
       elseif instruction=159 then   'erase CC sensors
         erase_type=ERASE_SENSORS         
-        gosub erase_can_control                                                                                                                
+        gosub erase_can_control 
+      elseif instruction=160 then   'date write       
+        gosub date_write                                                                                                                        
       endif                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
     endif
   else
@@ -6994,6 +7003,25 @@ time_write:
   endif
 return
 
+date_write:
+  if digitcount=3 and A_DigitTotal[0]<=31 and A_DigitTotal[0]>=1 and A_DigitTotal[1]<=12 and A_DigitTotal[1]>=1 and A_DigitTotal[2]<=99 and A_DigitTotal[3]<8 then
+    i2caddr = 4                             'write Date
+    t_word=A_DigitTotal[0]
+    gosub DS1307_write  
+    i2caddr = 5                             'write Month
+    t_word=A_DigitTotal[1]
+    gosub DS1307_write
+    i2caddr = 6                             'write Year
+    t_word=A_DigitTotal[2]
+    gosub DS1307_write
+    gosub read_date
+    gosub send_mes_ok  
+  else
+    error_code=23
+    gosub send_error
+  endif
+return
+
 DS1307_write:
   x=t_word.byte0
   a=x//10
@@ -7004,7 +7032,7 @@ DS1307_write:
 return
 
 time_read:
-  hserout2 [dec hours,":",dec2 minutes,":",dec2 seconds," ",dec days,13,10]
+  hserout2 [dec hours,":",dec2 minutes,":",dec2 seconds," ",dec days," (",dec2 date,"-",dec2 month,"-",dec2 year,")",13,10]
   gosub send_mes_ok
 return
 
@@ -10117,6 +10145,34 @@ Calc_time:
   y=a+(c*10)
 return
 
+Calc_date:
+  a=x&%00001111
+  b=x&%11110000
+  c=b>>4
+  y=a+(c*10)
+return
+
+read_date:
+  i2caddr = 4                               'read date
+  i2cdata = 0    
+  gosub read_i2c_2
+  x=i2cdata
+  gosub Calc_date
+  date = y
+  i2caddr = 5                               'read month
+  i2cdata = 0    
+  gosub read_i2c_2
+  x=i2cdata
+  gosub Calc_date
+  month = y
+  i2caddr = 6                               'read year
+  i2cdata = 0    
+  gosub read_i2c_2
+  x=i2cdata
+  gosub Calc_date
+  year = y    
+return
+
 read_seconds:
   i2caddr = 0                               'read seconds
   i2cdata = 0    
@@ -10200,7 +10256,10 @@ read_clock:
           gosub read_day
           gosub read_hours
           gosub thermostat_timing12
-          if hours==0 then Nr_rs485_power_resets=0
+          if hours==0 then 
+            Nr_rs485_power_resets=0
+            gosub read_date
+          endif  
           gosub Check_can_health
         elseif minutes=10 or minutes=20 or minutes=30 or minutes=40 or minutes=50 then
           gosub Set_CoolingHeating
@@ -10545,6 +10604,7 @@ check_timer_count:
     endif  
 return  
 
+'hier RS
 add_timer_action:
     if A_TimerType[i-1]=102 or A_TimerType[i-1]=106 then All_stores_overule_locked=YES    'If timer based group stop or individual stop, ignore stores_locked function
     'A_QueueType[queue_end]=A_TimerType[i-1]
