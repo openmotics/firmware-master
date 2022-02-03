@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 124
+BUILT               con 125
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
@@ -4639,6 +4639,22 @@ send_ST:                                    '"ST
   cid=0
 return
 
+send_rt:
+  gosub empty_e
+  A_e[0]="r"
+  A_e[1]="t"
+  A_e[2]=cid
+  A_e[3]=seconds
+  A_e[4]=minutes
+  A_e[5]=hours
+  A_e[6]=days
+  A_e[7]=date
+  A_e[8]=month
+  A_e[9]=year      
+  gosub send_api   
+  cid=0
+return
+
 send_AE:
   if mode_com=1 then
     gosub empty_e
@@ -5030,7 +5046,10 @@ Rs232_interprete:
         gosub bus_live
         x="D"
         y="O" 
-        gosub return_api_ok 
+        gosub return_api_ok
+      elseif (A_SerString[0] = "r") and (A_SerString[1] = "t") then     'Read Time "rt"
+        cid=A_SerString[2]
+        gosub send_rt       
       elseif (A_SerString[0] = "A") and (A_SerString[1] = "V") then     'Add Virtual Module "AV"                    
         if A_SerString[3]="i" or A_SerString[3]="d" or A_SerString[3]="o" or A_SerString[3]="r" then
           e=A_SerString[3]
