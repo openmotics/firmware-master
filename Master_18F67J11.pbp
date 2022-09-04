@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 125
+BUILT               con 126
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
@@ -1482,7 +1482,7 @@ PID_calc:
           q=pidCalcCounter
           gosub Set_TBS_Output
         endif
-      else                                  'Thermostats are OFF        
+      elseif ThermostatEnabled=1 then       'Thermostats are OFF        
         if A_ThermostatSensor[pidCalcCounter]<MAX_SENSORS then   'Don't switch off for TBS
           a=A_Thermostat[pidCalcCounter]
           DriveOutput=0
