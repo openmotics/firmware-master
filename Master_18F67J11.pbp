@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 126
+BUILT               con 127
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
@@ -2284,7 +2284,7 @@ Analyse_Input:
     for t=0 to 7                            'Check which input is activated
       v=((i-1)*8)+t
       q=A_SelOutput[v]     
-      if A_InputEnable[v]=1 then             'input enabled?
+      'if A_InputEnable[v]=1 then             'input enabled?
         m=A_Input[i-1]>>t                    'Check current input state
         n=A_InputOld[i-1]>>t                 'Check old input state   
         if m.bit0=1 and n.bit0=0 then        'Button pressed
@@ -2324,7 +2324,7 @@ Analyse_Input:
             gosub input_action
           endif            
         endif            
-      endif
+      'endif
     next t   
   else                                      'Input has not changed
     for t=0 to 7                            'Check which input is activated
