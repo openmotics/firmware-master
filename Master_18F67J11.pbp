@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 127
+BUILT               con 128
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
@@ -429,6 +429,7 @@ dimmer_value_eeprom_write       var   bit
 dimmer_value_eeprom_write_now   var   bit
 state_machine_eeprom_write      var   byte
 Nr_rs485_power_resets           var   byte
+AllInputsAlwaysEnabled          var   bit
 dimmer_nr           var byte
 dimmer_module_nr    var byte
 ErrorCount_Can      var word
@@ -739,7 +740,7 @@ CLEARWDT
 '--------------SET THERMOSTATS-------------
 Gosub Check_Thermostat_values               'Check if night A_Temperature values are correctly programmed
 CLEARWDT
-Gosub activate_eeprom                       'Copy eeprom values into RAM
+Gosub eeprom_activate                       'Copy eeprom values into RAM
 CLEARWDT
 
 '-----------LARGE INSTALLATION MODE--------
@@ -798,7 +799,7 @@ gosub Set_CoolingHeating
 gosub read_setpt_eeprom  
 
 CLEARWDT
-'Gosub activate_eeprom                       'Copy eeprom values into RAM
+'Gosub eeprom_activate                       'Copy eeprom values into RAM
 
 gosub check_RCON    'check the startup bits to know if for example a watchdog reset has happened
 gosub read_date
@@ -1077,7 +1078,7 @@ return
 
 check_system_health:
   if controller_in>=MAX_INPUT_MODULES or controller_out>=MAX_OUTPUT_MODULES or controller_out_rs>=MAX_RS_MODULES then
-    gosub activate_eeprom
+    gosub eeprom_activate
     cid=0
     gosub send_AE
   endif
@@ -2284,7 +2285,7 @@ Analyse_Input:
     for t=0 to 7                            'Check which input is activated
       v=((i-1)*8)+t
       q=A_SelOutput[v]     
-      'if A_InputEnable[v]=1 then             'input enabled?
+      if A_InputEnable[v]=1 or AllInputsAlwaysEnabled=YES then             'input enabled?
         m=A_Input[i-1]>>t                    'Check current input state
         n=A_InputOld[i-1]>>t                 'Check old input state   
         if m.bit0=1 and n.bit0=0 then        'Button pressed
@@ -2324,7 +2325,7 @@ Analyse_Input:
             gosub input_action
           endif            
         endif            
-      'endif
+      endif
     next t   
   else                                      'Input has not changed
     for t=0 to 7                            'Check which input is activated
@@ -4995,7 +4996,7 @@ Rs232_interprete:
       elseif (A_SerString[0] = "e") and (A_SerString[1] = "c") then     'Error Clear (clear all error counters)
         gosub instr_ec                                              '"ec  
       elseif (A_SerString[0] = "A") and (A_SerString[1] = "E") then     'Activate data in Eeprom (copy into RAM)                          '"AE
-        gosub activate_eeprom 
+        gosub eeprom_activate 
         gosub send_AE 
       elseif (A_SerString[0] = "a") and (A_SerString[1] = "e") then     'Activate data in Eeprom for RTD10 function                       '"ae
         gosub OnOffAirco 
@@ -5388,7 +5389,7 @@ instr_WD:
       eep_addr.byte0=4+z                    'byte 4 to 11
       i2cdata=x                             'Output needs to be written at the input page
       gosub write_eeprom
-      gosub activate_eeprom
+      gosub eeprom_activate
     endif 
     if a=5 then                             'Menu Position     
       eep_addr.byte1=33+v
@@ -6492,7 +6493,7 @@ Run_instruction:
       elseif instruction=12 then            'Eeprom write
         gosub eeprom_write
       elseif instruction=13 and digitcount=0 then       'eeprom activate
-        gosub activate_eeprom
+        gosub eeprom_activate
         gosub send_mes_ok    
       elseif instruction=14 and digitcount=0 then       'debug on
         debugmode=1
@@ -7253,7 +7254,7 @@ input_number_modules_write:
     t_word=A_DigitTotal[0]
     i2cdata=t_word.byte0
     gosub write_eeprom
-    gosub activate_eeprom       
+    gosub eeprom_activate       
     gosub send_mes_ok
   else
     error_code=23
@@ -7286,7 +7287,7 @@ output_number_modules_write:
     t_word=A_DigitTotal[0]
     i2cdata=t_word.byte0
     gosub write_eeprom
-    gosub activate_eeprom       
+    gosub eeprom_activate       
     gosub send_mes_ok
   else
     error_code=23
@@ -7979,7 +7980,7 @@ input_link_write:
     t_word2=A_DigitTotal[1]
     i2cdata=t_word2.byte0
     gosub write_eeprom
-    gosub activate_eeprom
+    gosub eeprom_activate
     gosub send_mes_ok
   else
     error_code=23
@@ -9626,7 +9627,7 @@ Read_ThermostatMode:
   gosub Set_CoolingHeating
 return
 
-activate_eeprom:
+eeprom_activate:
   'delete
   'hserout2 ["1: Activate Eeprom, In/Out=",dec controller_in,"/",dec controller_out,13,10]
   OledInstalled=0
@@ -9955,6 +9956,15 @@ activate_eeprom:
     all_stores_locked=NO                    'stores are not locked
   endif  
 
+  'Check if inputs always must be enabled even when inputs are configured being disabled
+  eep_addr.byte0=42                         'address
+  eep_addr.byte1=0                          'page
+  gosub read_eeprom   
+  if i2cdata==255 then                      
+    AllInputsAlwaysEnabled=NO               'Inputs can be disabled                    
+  else
+    AllInputsAlwaysEnabled=YES              'Inputs are always enabled, even when individual inputs are being configured to be disabled
+  endif
   
   'IMaximum number of thermostats used in the system, minimum 24 maximum 32
   'eep_addr.byte0=59                         'address
@@ -10129,7 +10139,11 @@ find_clock:
       A_Output(ic)=0
     next ic
     'gosub thermostat_timing                 'set all thermostats in the right mode conform to the programmed timings
-    'gosub correct_setpt   
+    'gosub correct_setpt
+    eep_addr.byte0=43                        'address
+    eep_addr.byte1=0                         'page
+    i2cdata=0                                'RTC NOT OK, probably battery empty
+    gosub write_eeprom        
   else
     if controller_out>30 then controller_out=30      
     for ic=1 to controller_out              'read from ram mem ds1307 Output(x)
@@ -10154,6 +10168,10 @@ find_clock:
     gosub read_minutes
     gosub read_hours
     gosub read_day
+    eep_addr.byte0=43                        'address
+    eep_addr.byte1=0                         'page
+    i2cdata=255                              'RTC is OK
+    gosub write_eeprom    
   Endif
 return
 
