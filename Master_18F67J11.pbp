@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 129
+BUILT               con 130
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
@@ -2847,7 +2847,11 @@ check_queue_sub:
 '        gosub Send_thermostat_event
 '    elseif BA_type>89 and BA_type<94 then  'Thermostat function Multi-Tenant        
 '        gosub Thermostat_action
-'        gosub Send_thermostat_event    
+'        gosub Send_thermostat_event
+    elseif BA_type>89 and BA_type<94 then   'Thermostat function
+        gosub send_EV2
+    elseif BA_type>127 and BA_type<150 then 'Thermostat function
+        gosub send_EV2            
     elseif BA_type=68 then              'Virtual input press
         gosub Virtual_input_press
     elseif BA_type=69 then              'Virtual input release
@@ -2913,17 +2917,17 @@ check_queue_sub:
     elseif BA_type=237 then             'Set Validation Bit
         A_ValBit[BA_action]=1
         ValBitNr=BA_action
-        gosub send_EV2
+        gosub send_EV1
     elseif BA_type=238 then             'Clear Validation Bit
         A_ValBit[BA_action]=0
         ValBitNr=BA_action
-        gosub send_EV2    
+        gosub send_EV1    
     elseif BA_type=239 then             'Toggle Validation Bit   
         i_bit2=A_ValBit[BA_action]
         toggle i_bit2
         A_ValBit[BA_action]=i_bit2
         ValBitNr=BA_action
-        gosub send_EV2    
+        gosub send_EV1    
     elseif BA_type=70 then              'Switch OFF 5V All Sensor Modules (will switch automatically after 1 minute)
         broad1="P"                              'Power message broadcast
         broad2="F"
@@ -3003,13 +3007,15 @@ check_queue_sub:
     'elseif BA_type=83 then              'Clear Permanent Manual Mode
     '    u=0
     '    gosub SetClear_PermanentManual
-    '    gosub Send_thermostat_event        
+    '    gosub Send_thermostat_event
+    elseif BA_type>=80 and BA_type<=83 then   'Thermostat function
+        gosub send_EV2            
     elseif BA_type=8 then               'Reset all errors and bring modules that are offline back online
         gosub Reset_error                     
     elseif BA_type=254 then             'reset processor
         asm
             reset
-        endasm                                                                   
+        endasm                                                                        
     endif
     BA_parameter_used=NO  
 return
@@ -3839,7 +3845,7 @@ Store_group:
                     gosub Write_GroupDirection_in_eeprom
                 endif
                 ValBitNr=90+v
-                gosub send_EV2    
+                gosub send_EV1    
             endif
         endif
         c=0
@@ -3898,7 +3904,7 @@ Store_1Action:
                     'A_ValBit[120+v]=0        
                 endif
                 'ValBitNr=120+v
-                'gosub send_EV2
+                'gosub send_EV1
             else
                 if UpDir=1 then
                     gosub Store_Up
@@ -4394,7 +4400,7 @@ validation_bit:
     A_ValBit[a]=~A_ValBit[a]  
   endif
   ValBitNr=a
-  gosub send_EV2  
+  gosub send_EV1  
 return
 
 simple_action_on:
@@ -4674,7 +4680,7 @@ send_EV:
   endif
 Return
 
-send_EV2:
+send_EV1:
   if mode_com=1 then
     gosub empty_e
     cid=0
@@ -4684,6 +4690,20 @@ send_EV2:
     A_e[3]=1
     A_e[4]=ValBitNr
     A_e[5]=A_ValBit[ValBitNr]
+    gosub send_api     
+  endif
+Return
+
+send_EV2:
+  if mode_com=1 then
+    gosub empty_e
+    cid=0
+    A_e[0]="E"
+    A_e[1]="V"
+    A_e[2]=0    'CID=0
+    A_e[3]=2
+    A_e[4]=BA_type
+    A_e[5]=BA_action
     gosub send_api     
   endif
 Return
@@ -6765,7 +6785,7 @@ Run_instruction:
         erase_type=ERASE_SENSORS         
         gosub erase_can_control 
       elseif instruction=160 then   'date write       
-        gosub date_write                                                                                                                        
+        gosub date_write                                                                                                                         
       endif                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
     endif
   else
