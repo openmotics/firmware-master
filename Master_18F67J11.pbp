@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 130
+BUILT               con 131
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
@@ -5769,13 +5769,13 @@ instr_xL2:
 '  elseif (A_SerString[0] = "p") then          'Read Permanent Thermostat List (32 bytes)
 '    cid=A_SerString[2]                        '"pL
 '    gosub instr_pL       
-'  endif
+  endif
 return
 
 instr_xl:
   'if (A_SerString[0] = "t") then              'Read Thermostat list
   '  gosub instr_tl                          '"tl"                                                    
-  elseif (A_SerString[0] = "h") then          'Read humidity list
+  if (A_SerString[0] = "h") then          'Read humidity list
     gosub instr_hl                          '"hl"      
   elseif (A_SerString[0] = "c") then          'Read Temperature list
     gosub instr_cl                          '"cl"      
