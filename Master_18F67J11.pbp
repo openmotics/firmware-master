@@ -52,7 +52,7 @@ define      NO_CLRWDT 1
 '-------CONSTANTS------------
 VERSION             con 3
 FIRMWARE            con 143                                    
-BUILT               con 131
+BUILT               con 132
 
 HARDWARE            con 4
 BUFFER_RS232        con 120                         ' Number of bytes received from serial buffer
@@ -2912,7 +2912,7 @@ check_queue_sub:
         gosub reset_pulsecounter         
     elseif BA_type>119 and BA_type<127 then   'Set Free variables        
         gosub Set_Free_Variables             
-    elseif BA_type>211 and BA_type<220 then
+    elseif BA_type>211 and BA_type<221 then
         gosub CAN_Leds    
     elseif BA_type=237 then             'Set Validation Bit
         A_ValBit[BA_action]=1
@@ -3082,7 +3082,9 @@ CAN_Leds:
     eep_addr.byte0=32                       'address
     eep_addr.byte1=0                        'page
     i2cdata=BA_action
-    gosub write_eeprom     
+    gosub write_eeprom
+  elseif BA_type=220 then             'Switch OFF all leds
+    Gosub all_leds_off      
   else                                      'Led
     'delete
     'Hserout2 ["Set Led ",dec BA_type," ",dec BA_action,13,10]
